@@ -1,12 +1,12 @@
 # 挪威股票历史数据采集系统 — 系统设计文档
 
-**版本：** v1.2　**日期：** 2026-10-12　**状态：** MVP 设计　**目标：** 个人研究与分析，尽可能维持 $0/月
+**版本：** v1.3　**日期：** 2026-10-12　**状态：** MVP 设计　**目标：** 个人研究与分析，尽可能维持 $0/月
 
 ## 1. 概述
 
-构建一套自动采集挪威上市股票名单和 OHLCV 日线历史数据的系统：从 Euronext 获取证券主数据，将代码映射到 Yahoo Finance；通过 yfinance 抓取历史行情及公司行为（拆股、分红）；使用 Prefect Cloud Hobby 负责定时编排和 Serverless 执行；持久化到 Supabase 免费 PostgreSQL。提供可重复执行、断点恢复、质量校验、告警和后续分析的基础。
+构建一套自动采集挪威上市股票名单和 OHLCV 日线历史数据的系统：从 Euronext 获取证券主数据，将代码映射到 Yahoo Finance；通过 yfinance 抓取历史行情及公司行为（拆股、分红）；使用 Prefect Cloud Hobby 负责定时编排和 Serverless 执行；持久化到 Neon 免费 PostgreSQL。提供可重复执行、断点恢复、质量校验、告警和后续分析的基础。
 
-**关键判断：** 该架构作为个人项目可行，但 $0 并非服务等级承诺。Prefect Cloud Hobby 当前额度为最多 5 个 Deployments、500 Serverless 分钟/月、运行记录保留 7 天；Supabase Free 为每项目 500 MB 数据库空间，且低活跃度项目可能暂停。yfinance 不是官方市场数据接口，不保证全量股票可用，也不保证请求稳定性及再分发授权。Yahoo 对数据中心 IP（包括 Serverless 和 CI 环境）的限流和封禁通常比家用网络严格，云端执行能否稳定抓取必须在阶段 2 实测，并预留本地执行的回退方案（见 §3）。
+**关键判断：** 该架构作为个人项目可行，但 $0 并非服务等级承诺。Prefect Cloud Hobby 当前额度为最多 5 个 Deployments、500 Serverless 分钟/月、运行记录保留 7 天；Neon Free 为每项目 1 GB 存储、100 CU-hours/月、5 GB/月公网流量，计算节点空闲 5 分钟后自动挂起（不可关闭），超额后计算被挂起或写入失败（数据不删除）。yfinance 不是官方市场数据接口，不保证全量股票可用，也不保证请求稳定性及再分发授权。Yahoo 对数据中心 IP（包括 Serverless 和 CI 环境）的限流和封禁通常比家用网络严格，云端执行能否稳定抓取必须在阶段 2 实测，并预留本地执行的回退方案（见 §3）。
 
 ## 2. 范围
 
@@ -32,12 +32,12 @@
 flowchart TD
   A[Euronext Oslo 证券列表] --> B[清单适配器 / 手动 CSV 回退]
   B --> C[股票代码标准化及映射]
-  C --> D[(Supabase: instruments / symbol_aliases)]
+  C --> D[(Neon: instruments / symbol_aliases)]
   P[Prefect Cloud Hobby 调度] --> E[Serverless Python Flow<br/>或本地 process worker]
   D --> E
   E --> F[yfinance / Yahoo 历史行情 + 公司行为]
   F --> G[标准化和质量检查]
-  G --> H[(Supabase: daily_prices / corporate_actions)]
+  G --> H[(Neon: daily_prices / corporate_actions)]
   G --> S[(instrument_sync_state)]
   E --> I[(ingestion_runs / ingestion_errors)]
   G --> I
@@ -56,7 +56,7 @@ flowchart TD
 | 历史行情 | yfinance | 免费、Python 易用，支持批量日线和公司行为 | 非官方接口、429、符号不全、数据调整差异；数据中心 IP 限流更严 |
 | 交易日历 | `exchange_calendars`（`XOSL`） | 开源维护的 Oslo 交易日及假日 | 临时休市需人工补充 |
 | 编排及运行 | Prefect Cloud Hobby + Serverless（回退：本地 process worker） | 免自建 Prefect Server，支持计划任务 | 5 个 deployments、500 分钟/月、7 天日志保留 |
-| 数据库 | Supabase Free PostgreSQL | SQL 查询和唯一键 upsert | 500 MB、项目可能暂停、免费版无自动备份；直连默认仅 IPv6 |
+| 数据库 | Neon Free PostgreSQL 17（Azure Germany West Central） | SQL 查询和唯一键 upsert；支持 IPv4 直连；分支便于测试 | 1 GB 存储、100 CU-hours/月、5 GB 流量/月；空闲 5 分钟挂起，首个查询有冷启动延迟；即时恢复窗口仅 6 小时，无计划备份 |
 | 代码、CI 与备份 | GitHub + 本地开发；GitHub Actions 定期 `pg_dump` | 版本管理、测试、异地备份 | 私钥不得写入代码仓库；备份产物不得公开 |
 
 ## 5. 数据流与任务
@@ -221,23 +221,23 @@ CREATE TABLE ingestion_errors (
 
 ## 9. 安全与合规
 
-- `STOCKDATA_DB_URL`（Supabase pooler 连接串，写入角色专用）、`PREFECT_API_KEY` 只放在 Prefect Secret/环境变量；不用前端可见的匿名 key 执行数据库维护。
-- **连接方式：** Supabase 直连地址默认仅 IPv6，Serverless 和 CI 环境通常无法连接，应使用 Supavisor pooler 连接串。批处理任务优先 session 模式（5432 端口）；若使用 transaction 模式（6543 端口），须禁用 prepared statements（psycopg 设 `prepare_threshold=None`）。
+- `STOCKDATA_DB_URL`（或 `DATABASE_URL`；Neon 连接串，写入角色专用）、`PREFECT_API_KEY` 只放在 Prefect Secret/环境变量；不用前端可见的匿名 key 执行数据库维护。
+- **连接方式：** 采集任务连接数少、事务长，使用 Neon **直连**地址（`ep-xxx.<region>.neon.tech`，已实测可通过 IPv4 连接）。Neon 的 pooled 地址（主机名加 `-pooler`）是 PgBouncer transaction 模式，不支持 `SET`、SQL 级 `PREPARE`、会话级 advisory lock 等；Neon 官方建议 schema 迁移和 `pg_dump` 走直连。代码统一设 `prepare_threshold=None`，两种地址都能用。连接串须为 libpq 格式（`postgresql://...?sslmode=require`）；SQLAlchemy/asyncpg 写法（`postgresql+asyncpg://...?ssl=require`）由 `config.py` 自动转换。
 - 数据库启用 TLS，最小权限，尽量以单独采集账户授权 INSERT/UPDATE；不公开数据库连接串。
 - 执行前核查 Euronext 数据获取/使用条款与 Yahoo Finance/yfinance 的许可。当前方案仅用于个人研究，不应未经许可公开再分发历史价格数据。
 - Prefect 日志只输出 ticker、数量、耗时和脱敏错误，不输出凭证、完整连接 URL。
-- **备份：** Supabase Free 无自动备份承诺。使用 GitHub Actions 每周执行 `pg_dump`，压缩后存入私有存储（私有仓库 release 资产或个人云盘，不得公开）；保留最近 N 份，并至少完成一次恢复演练。
+- **备份：** Neon Free 只有 6 小时即时恢复窗口和 1 个手动快照，没有计划备份。使用 GitHub Actions 每周通过直连地址执行 `pg_dump`，压缩后存入私有存储（私有仓库 release 资产或个人云盘，不得公开）；保留最近 N 份，并至少完成一次恢复演练。
 
 ## 10. 容量与成本
 
-**估算：** 300 只股票 × 250 交易日/年 × 10 年 ≈ 750,000 条价格记录。以 500 只计约 1,250,000 条。采用 DOUBLE PRECISION 与 SMALLINT source_id 后单行数据约 80–90 字节（含行头），加主键索引约 40 字节/行，125 万行估算约 150–200 MB。这只是估算，500 MB 是否够必须以真实 schema 和导入后的 `pg_total_relation_size` 实测。
+**估算：** 300 只股票 × 250 交易日/年 × 10 年 ≈ 750,000 条价格记录。以 500 只计约 1,250,000 条。采用 DOUBLE PRECISION 与 SMALLINT source_id 后单行数据约 80–90 字节（含行头），加主键索引约 40 字节/行，125 万行估算约 150–200 MB。**实测（2026-10-12）：** 21 只股票 × 10 年 = 50,903 行，`daily_prices` 含索引 7 MB（约 140 字节/行），整库 15 MB；按此推算 125 万行约 170 MB，与估算一致，远低于 Neon Free 的 1 GB。
 
 **运行预算示例：** 假定价格 Flow 每天 4 分钟、每月 22 个交易日，约 88 分钟/月；清单同步 4 × 3 分钟，校验 4 × 5 分钟，预计约 120 分钟/月。首次回填、公司行为触发的全量重取和重试另计；真实执行时长需测量，500 分钟/月不是无限量。使用本地 worker 时不消耗 Serverless 分钟数。
 
 | 资源 | 免费额度或约束 | 管控建议 |
 |---|---|---|
 | Prefect Hobby | 5 deployments；500 Serverless min/月；运行历史 7 天 | MVP 用 4 个 flows；对每次运行计时和月度预警 |
-| Supabase Free | 500 MB DB；低活跃项目可暂停 | 每周监测总大小，达到 350 MB 先讨论压缩/迁移；每日写入可保持项目活跃 |
+| Neon Free | 1 GB 存储/项目；100 CU-hours/月；5 GB 公网流量/月；空闲 5 分钟挂起 | 每周监测库大小，达到 700 MB 先讨论压缩/迁移；每日任务每次约数分钟计算（含挂起前 5 分钟空闲），远低于 100 CU-hours；本地分析大量拉取数据会消耗流量额度，需留意 |
 | yfinance | 无公开固定请求额度，可能被 429；数据中心 IP 更严 | 低并发、缓存和增量更新；必要时切换本地执行 |
 | Euronext | 官方列表提供信息，但自动下载路径、条款需验证 | 首版允许人工 CSV 输入作为回退 |
 | GitHub Actions | 私有仓库有月度免费分钟数 | 仅用于 CI 和每周备份，耗时很小 |
@@ -275,7 +275,7 @@ norway-stock-data/
 
 ## 12. 部署及验收计划
 
-**阶段 1：基础设施（0.5–1 天）** 创建 Supabase Free、应用表结构及最小权限；确认通过 pooler 连接串可从 Serverless 访问数据库；创建 Prefect Cloud Hobby，连接 Serverless；配置 Secrets。
+**阶段 1：基础设施（0.5–1 天）** 创建 Neon Free 项目、应用表结构及最小权限；确认可从 Serverless 访问数据库（直连地址，IPv4）；创建 Prefect Cloud Hobby，连接 Serverless；配置 Secrets。
 
 **阶段 2：10 只股票端到端验证（1 天）** 手工指定 EQNR.OL 等 10 只股票（包含至少一只非 NOK 报价、一只有过拆股的股票，如 KOG.OL / TOM.OL，以及已知有拆股异常和数据缺口的 BORR.OL），下载最近 1 年；**必须在 Serverless 上实际运行**，确认 Yahoo 不拒绝数据中心 IP，否则切换本地 worker 方案；验证调整字段、公司行为检测与全量重取、重复执行、重试、数据库权限及运行费用。
 
@@ -299,14 +299,14 @@ norway-stock-data/
 - 名单获取方式是否可以合规自动化；若不能，改为每周人工上传 CSV。
 - 是否需要保存已退市证券的完整历史和历史 ticker 对照（需额外数据源，见 §2 已知局限）。
 - 执行环境：Serverless 与本地 worker 的最终选择，取决于阶段 2 实测。另一备选是 GitHub Actions cron 承担全部调度，可省去 Prefect deployment 限制，但同样是数据中心 IP，限流风险相同。
-- 若数据库实测超过 500 MB：优先瘦身字段与索引、归档旧数据，或选择付费容量。
+- 若数据库实测接近 1 GB：优先瘦身字段与索引、归档旧数据，或选择付费容量。
 
-## 14. 官方参考资料（核对日期 2026-10-08）
+## 14. 官方参考资料（核对日期 2026-10-08；Neon 部分 2026-10-12）
 
 1. Prefect Pricing: https://www.prefect.io/pricing
-2. Supabase Billing & Free Limits: https://supabase.com/docs/guides/platform/billing-on-supabase
-3. Supabase Free Project Pausing: https://supabase.com/docs/guides/platform/free-project-pausing
-4. Supabase Connecting to Postgres（直连与 pooler）: https://supabase.com/docs/guides/database/connecting-to-postgres
+2. Neon Plans（Free 额度，核对日期 2026-10-12）: https://neon.com/docs/introduction/plans
+3. Neon Connection pooling（-pooler 地址与限制）: https://neon.com/docs/connect/connection-pooling
+4. Neon Connect（连接串）: https://neon.com/docs/connect/connect-from-any-app
 5. Euronext Oslo equities list: https://live.euronext.com/en/markets/oslo/equities/list
 6. yfinance project: https://github.com/ranaroussi/yfinance
 7. exchange_calendars: https://github.com/gerrymanoim/exchange_calendars
@@ -320,3 +320,4 @@ norway-stock-data/
 | v1.0 | 2026-10-08 | 初版 |
 | v1.1 | 2026-10-12 | 新增 corporate_actions、instrument_sync_state 表及公司行为触发的全量重取；symbol_aliases 增加生效映射唯一约束；币种取消 NOK 默认值；价格改用 DOUBLE PRECISION、source 改为 SMALLINT；明确 Yahoo Close 口径；补充数据中心 IP 风险与本地 worker 回退、Supabase pooler 连接、交易日历来源、批量分组规则、盘中数据过滤、幸存者偏差、备份方案 |
 | v1.2 | 2026-10-12 | 根据本地实测（BORR.OL）新增拆股附近跳变检测（split_anomaly）与长时间缺数据分类（suspended / 退市 / source_gap）；instruments 增加 suspended 状态；阶段 2 测试样本与验收标准相应补充 |
+| v1.3 | 2026-10-12 | 数据库由 Supabase 改为 Neon Free：更新额度、连接方式（直连 IPv4、-pooler 限制、URL 格式自动转换）、备份理由、容量实测数据与监控阈值 |

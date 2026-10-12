@@ -9,7 +9,7 @@
 - 完整设计：`docs/norway_stock_data_system_design.md`（修改架构、表结构或 Flow 前先读它，改完同步更新文档）
 - 当前状态：`src/stockdata/` 骨架已建立。`config.py`、`trading_calendar.py`、`models.py` 已实现；其余函数签名和 docstring 已定，函数体为 `NotImplementedError`，待按 TDD 逐个实现。`yfin.py` 是早期试验脚本；`scripts/yahoo_ip_test.py` 用于检测 Yahoo 对当前网络（含云端 IP）是否可用。
 
-技术栈：Python ≥3.11、uv、yfinance、Prefect Cloud Hobby（Serverless 执行）、Neon PostgreSQL（设计文档仍写 Supabase，待更新）。连接串来自 `.env` 的 `STOCKDATA_DB_URL` 或 `DATABASE_URL`（asyncpg 写法会自动转换）。
+技术栈：Python ≥3.11、uv、yfinance、Prefect Cloud Hobby（Serverless 执行）、Neon Free PostgreSQL（1 GB 存储、100 CU-hours/月，空闲 5 分钟挂起）。连接串来自 `.env` 的 `STOCKDATA_DB_URL` 或 `DATABASE_URL`（asyncpg 写法会自动转换）。
 
 ## 常用命令
 
@@ -72,12 +72,13 @@ tests/
 
 免费额度
 - Prefect Serverless 500 分钟/月：每个 Flow 要限制单次最长执行时间，回填必须可断点续跑。
-- Supabase 500 MB：改表结构时考虑行宽和索引体积。
+- Neon 1 GB 存储、5 GB/月公网流量：改表结构时考虑行宽和索引体积；避免反复整表拉取到本地。
 
 安全
 - 凭证（`STOCKDATA_DB_URL`、`PREFECT_API_KEY`）只来自环境变量 / Prefect Secret，提供 `.env.example`，`.env` 不入库。
 - 日志不得输出连接串或凭证。
-- Supabase 直连地址默认仅 IPv6；从 Serverless/CI 连接通常需要用 Supavisor pooler 连接串。使用 transaction 模式（6543 端口）时要禁用 prepared statements。
+- 采集任务和 `pg_dump` 用 Neon 直连地址；`-pooler` 地址是 PgBouncer transaction 模式，不支持 `SET`、SQL 级 `PREPARE`、会话级 advisory lock。`db.connect()` 已设 `prepare_threshold=None`。
+- 输出连接错误时注意 psycopg 的异常信息可能包含完整连接串（含密码），打印前要脱敏。
 
 ## 测试
 
