@@ -59,7 +59,7 @@ def probe_single(ticker: str, period: str) -> dict:
             "split_adjusted": split_adjusted(df),
             "error": "" if rows > 0 else "empty result",
         }
-    except Exception as exc:  # yfinance raises various types, incl. rate-limit errors
+    except Exception as exc:  # noqa: BLE001 - yfinance raises various types, incl. rate-limit errors
         result = {"ok": False, "rows": 0, "splits": 0, "dividends": 0, "split_adjusted": "-",
                   "error": f"{type(exc).__name__}: {exc}"[:200]}
     result["seconds"] = round(time.monotonic() - start, 2)
@@ -75,7 +75,7 @@ def probe_batch(tickers: list[str]) -> dict:
                and df[t]["Close"].notna().any()]
         result = {"ok": len(got), "total": len(tickers),
                   "missing": sorted(set(tickers) - set(got)), "error": ""}
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - report any failure, never abort the probe
         result = {"ok": 0, "total": len(tickers), "missing": tickers,
                   "error": f"{type(exc).__name__}: {exc}"[:200]}
     result["seconds"] = round(time.monotonic() - start, 2)
@@ -116,8 +116,8 @@ def main() -> int:
     b = probe_batch(tickers)
     print("batch", b, flush=True)
     lines += ["### 2. Batched yf.download, 1mo", "",
-              f"Got **{b['ok']}/{b['total']}** in {b['seconds']}s. "
-              f"Missing: {', '.join(b['missing']) or 'none'}. {b['error']}", ""]
+              (f"Got **{b['ok']}/{b['total']}** in {b['seconds']}s. "
+              f"Missing: {', '.join(b['missing']) or 'none'}. {b['error']}"), ""]
 
     backfill = [t.strip() for t in args.backfill_tickers.split(",") if t.strip()]
     lines += ["### 3. 10y history (backfill simulation + split adjustment check)", "",

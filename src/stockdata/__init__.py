@@ -1,0 +1,1 @@
+"""Norway stock data collector."""

@@ -221,7 +221,7 @@ CREATE TABLE ingestion_errors (
 
 ## 9. 安全与合规
 
-- `SUPABASE_DB_URL`（写入角色专用）、`PREFECT_API_KEY` 只放在 Prefect Secret/环境变量；不用前端可见的匿名 key 执行数据库维护。
+- `STOCKDATA_DB_URL`（Supabase pooler 连接串，写入角色专用）、`PREFECT_API_KEY` 只放在 Prefect Secret/环境变量；不用前端可见的匿名 key 执行数据库维护。
 - **连接方式：** Supabase 直连地址默认仅 IPv6，Serverless 和 CI 环境通常无法连接，应使用 Supavisor pooler 连接串。批处理任务优先 session 模式（5432 端口）；若使用 transaction 模式（6543 端口），须禁用 prepared statements（psycopg 设 `prepare_threshold=None`）。
 - 数据库启用 TLS，最小权限，尽量以单独采集账户授权 INSERT/UPDATE；不公开数据库连接串。
 - 执行前核查 Euronext 数据获取/使用条款与 Yahoo Finance/yfinance 的许可。当前方案仅用于个人研究，不应未经许可公开再分发历史价格数据。
@@ -257,7 +257,7 @@ norway-stock-data/
 │   ├── config.py
 │   ├── db.py
 │   ├── models.py
-│   ├── calendar.py              # XOSL 交易日历封装
+│   ├── trading_calendar.py      # XOSL 交易日历封装（不用 calendar.py，避免遮蔽标准库）
 │   ├── sources/euronext.py
 │   ├── sources/yahoo.py
 │   ├── pipelines/instruments.py

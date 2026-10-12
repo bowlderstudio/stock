@@ -1,9 +1,31 @@
 [project]
-name = "stock"
+name = "stockdata"
 version = "0.1.0"
-description = "Add your description here"
+description = "Norway stock list and daily OHLCV history collector (Euronext Oslo + Yahoo Finance)"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
+    "exchange-calendars>=4.13.2",
+    "pandas>=3.0.6",
+    "prefect>=3.8.8",
+    "psycopg[binary]>=3.3.6",
+    "pydantic-settings>=2.15.0",
     "yfinance>=1.7.0",
+]
+
+[build-system]
+requires = ["uv_build>=0.11.6,<0.12"]
+build-backend = "uv_build"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "ruff>=0.17.0",
 ]
