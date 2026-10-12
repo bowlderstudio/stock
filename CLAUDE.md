@@ -22,7 +22,7 @@ uv run ruff check src tests scripts && uv run ruff format src tests   # lint + �
 uv run python scripts/yahoo_ip_test.py   # Yahoo 可用性测试（访问网络）
 uv run python scripts/apply_sql.py sql/001_init.sql   # 对 .env 中的数据库执行 SQL
 uv run python scripts/import_euronext_list.py [--dry-run]   # 导入 data/euronext/ 中最新的 Euronext Excel（Flow A）
-uv run python scripts/load_yahoo_history.py           # 临时回填脚本（Flow C 完成前使用）
+uv run python scripts/backfill_history.py [--dry-run] [--max-minutes N] [--tickers A.OL,B.OL] [--refetch-pending]   # Flow C 回填，可中断续跑
 
 # 数据库测试（tests/test_db.py）需要本地一次性 PostgreSQL，不可用时自动 skip：
 docker run -d --name stockdata-test-pg -e POSTGRES_PASSWORD=test -e POSTGRES_DB=stockdata_test \

@@ -66,3 +66,13 @@ def verify_symbol(symbol: str, ticker_factory=yf.Ticker) -> tuple[bool, str | No
     if history.empty:
         return False, None
     return True, ticker.history_metadata.get("currency")
+
+
+def fetch_history(symbol: str, start: date) -> pd.DataFrame:
+    """Full daily history since `start` with dividends/splits (auto_adjust=False).
+
+    yfinance hides most request errors and returns an empty frame by default; that would
+    turn a transient failure into "no data", so exceptions are re-enabled here.
+    """
+    yf.config.debug.hide_exceptions = False
+    return yf.Ticker(symbol).history(start=start, auto_adjust=False, actions=True)

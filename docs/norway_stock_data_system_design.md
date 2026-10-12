@@ -1,6 +1,6 @@
 # 挪威股票历史数据采集系统 — 系统设计文档
 
-**版本：** v1.4　**日期：** 2026-10-12　**状态：** MVP 设计　**目标：** 个人研究与分析，尽可能维持 $0/月
+**版本：** v1.5　**日期：** 2026-10-12　**状态：** MVP 设计　**目标：** 个人研究与分析，尽可能维持 $0/月
 
 ## 1. 概述
 
@@ -84,8 +84,9 @@ flowchart TD
 - 逐批为每只股票拉取 10 年日线数据及公司行为；进度写入 `instrument_sync_state`，可断点续跑。
 - 处理 `needs_full_refetch = TRUE` 的股票：重取全部历史，UPSERT 覆盖，完成后清除标记并记录修订行数。
 - 控制每次 Flow 的最大执行时间（例如 10 分钟），避免 Prefect 免费额度被单次回填耗尽；未完成部分留待下次运行。
-- 支持 `--tickers`, `--start`, `--end`, `--batch-size`, `--refetch-pending`, `--dry-run` 参数。
+- 支持 `--tickers`, `--start`, `--max-minutes`, `--refetch-pending`, `--dry-run` 参数（`scripts/backfill_history.py`；Prefect flow 使用 `max_flow_seconds`）。
 - 对停牌、IPO 之后才有数据、退市、映射失败等区分状态，不能视为抓取错误一概重试。
+- **实现要点（2026-10-12）：** 候选为 status=active、Yahoo 映射已验证、`backfill_status` 为 pending/in_progress（加 `--refetch-pending` 时含 `needs_full_refetch`）的证券；`--tickers` 强制处理指定代码。逐只股票单次 `Ticker.history(start, auto_adjust=False, actions=True)`，每只处理完即提交。单只失败：`consecutive_failures + 1`、保持 pending、写 `http_error`，继续下一只；返回空数据：标 `no_data`。遇到 Yahoo 限流（`YFRateLimitError`）立即结束本次运行，剩余保持 pending。yfinance 默认会吞掉网络错误并返回空表，抓取时关闭该行为（`yf.config.debug.hide_exceptions = False`），避免临时故障被误记为 `no_data`。质量问题只记录不丢行。
 
 ### Flow D: reconcile_recent_prices（每周）
 - 重取最近 30–60 个交易日，对比 close、volume 和更新后的调整口径；必要时 UPSERT 修订数据。
@@ -323,3 +324,4 @@ norway-stock-data/
 | v1.2 | 2026-10-12 | 根据本地实测（BORR.OL）新增拆股附近跳变检测（split_anomaly）与长时间缺数据分类（suspended / 退市 / source_gap）；instruments 增加 suspended 状态；阶段 2 测试样本与验收标准相应补充 |
 | v1.3 | 2026-10-12 | 数据库由 Supabase 改为 Neon Free：更新额度、连接方式（直连 IPv4、-pooler 限制、URL 格式自动转换）、备份理由、容量实测数据与监控阈值 |
 | v1.4 | 2026-10-12 | Flow A 改为人工下载 Euronext Excel + 本地导入（条款禁止自动获取）；记录文件格式与 MIC 映射；股权证与优先股纳入范围；缺席判定仅限文件中出现的市场；更正"相当数量 USD/EUR 报价"的说法（当前清单全为 NOK）；Prefect flows 减为 3 个 |
+| v1.5 | 2026-10-12 | Flow C 实现要点：候选选择、逐只提交、失败与限流处理、yfinance 异常隐藏问题；参数表与脚本对齐 |

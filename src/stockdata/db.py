@@ -230,3 +230,33 @@ def set_instrument_status(conn: psycopg.Connection, instrument_id: int, status: 
     conn.execute(
         "UPDATE instruments SET status = %s WHERE instrument_id = %s", (status, instrument_id)
     )
+
+
+def backfill_candidates(
+    conn: psycopg.Connection, tickers: list[str] | None = None, refetch_pending: bool = False
+) -> list[tuple[int, str]]:
+    """(instrument_id, yahoo_symbol) to backfill, in instrument_id order.
+
+    Default: active instruments with a verified Yahoo mapping whose backfill is pending or
+    was interrupted; plus those flagged needs_full_refetch when refetch_pending. Explicit
+    `tickers` (Yahoo symbols) are selected regardless of backfill status.
+    """
+    rows = conn.execute(
+        """
+        SELECT i.instrument_id, a.provider_symbol
+        FROM instruments i
+        JOIN symbol_aliases a
+          ON a.instrument_id = i.instrument_id AND a.provider = 'yahoo'
+         AND a.valid_to IS NULL AND a.is_verified
+        LEFT JOIN instrument_sync_state s ON s.instrument_id = i.instrument_id
+        WHERE i.status = 'active'
+          AND CASE WHEN %(tickers)s::text[] IS NOT NULL
+                   THEN a.provider_symbol = ANY(%(tickers)s::text[])
+                   ELSE COALESCE(s.backfill_status, 'pending') IN ('pending', 'in_progress')
+                        OR (%(refetch)s AND COALESCE(s.needs_full_refetch, FALSE))
+              END
+        ORDER BY i.instrument_id
+        """,
+        {"tickers": tickers, "refetch": refetch_pending},
+    ).fetchall()
+    return [(iid, sym) for iid, sym in rows]
