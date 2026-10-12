@@ -1,0 +1,42 @@
+# Checks whether Yahoo Finance serves data to GitHub-hosted (datacenter) runner IPs.
+# See docs/norway_stock_data_system_design.md §3 / §12 phase 2.
+name: Yahoo IP test
+
+on:
+  workflow_dispatch:
+    inputs:
+      tickers:
+        description: "Comma-separated Yahoo symbols (empty = built-in list of 20 Oslo stocks)"
+        required: false
+        default: ""
+      min_success_rate:
+        description: "Fail the run below this single-ticker success rate"
+        required: false
+        default: "0.95"
+  # Uncomment to repeat the test at different times of day for a few days:
+  # schedule:
+  #   - cron: "0 20 * * 1-5"   # 20:00 UTC ≈ 22:00 Oslo (summer time)
+
+permissions:
+  contents: read
+
+jobs:
+  yahoo-ip-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      - name: Run Yahoo reachability test
+        env:
+          TICKERS: ${{ inputs.tickers }}
+          MIN_SUCCESS_RATE: ${{ inputs.min_success_rate || '0.95' }}
+        run: |
+          args=(--min-success-rate "$MIN_SUCCESS_RATE")
+          if [ -n "$TICKERS" ]; then args+=(--tickers "$TICKERS"); fi
+          uv run python scripts/yahoo_ip_test.py "${args[@]}"
