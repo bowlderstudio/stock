@@ -3,3 +3,6 @@ __pycache__/
 *.pyc
 .env
 .idea/
+
+# Euronext downloads: personal use only, must not be redistributed
+data/

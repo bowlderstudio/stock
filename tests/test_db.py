@@ -95,3 +95,16 @@ def test_run_and_error_are_recorded(conn):
     assert conn.execute("select error_type from ingestion_errors").fetchall() == [
         ("split_anomaly",)
     ]
+
+
+def test_run_duration_reflects_wall_clock_within_one_transaction(conn):
+    import time
+
+    run_id = uuid.uuid4()
+    db.start_run(conn, run_id, "sync_instruments")
+    time.sleep(0.3)  # work done inside the same transaction
+    db.finish_run(conn, run_id, "completed")
+    seconds = conn.execute(
+        "select extract(epoch from finished_at - started_at) from ingestion_runs"
+    ).fetchone()[0]
+    assert seconds >= 0.3

@@ -1,6 +1,6 @@
 # 挪威股票历史数据采集系统 — 系统设计文档
 
-**版本：** v1.3　**日期：** 2026-10-12　**状态：** MVP 设计　**目标：** 个人研究与分析，尽可能维持 $0/月
+**版本：** v1.4　**日期：** 2026-10-12　**状态：** MVP 设计　**目标：** 个人研究与分析，尽可能维持 $0/月
 
 ## 1. 概述
 
@@ -11,7 +11,7 @@
 ## 2. 范围
 
 ### MVP 范围
-- 证券清单：Oslo Børs、Euronext Growth Oslo、Euronext Expand Oslo，股票为主；储蓄银行 equity certificates 可作为后续扩展。
+- 证券清单：Oslo Børs、Euronext Growth Oslo、Euronext Expand Oslo 的全部上市证券（2026-10-12 清单共 294 只），包括储蓄银行股权证（equity certificates）和优先股。Euronext 清单没有证券类型列，`instrument_type` 暂统一记为 `common_stock`，有可靠类型来源后再细分。
 - 主数据：证券名、ISIN、交易代码、市场、报价币种、活跃状态、抓取时间；记录代码映射及有效性。
 - 日线：交易日、Open/High/Low/Close、Adjusted Close（如源可得）、Volume、来源、采集时间。
 - 公司行为：拆股/合股比例、现金分红，用于检测历史价格调整并触发全量重取。
@@ -61,13 +61,14 @@ flowchart TD
 
 ## 5. 数据流与任务
 
-### Flow A: sync_instruments（每周，建议周日）
-1. 下载许可范围内的 Euronext 清单；如果无法自动获取则导入已下载 CSV（保留原始快照与来源时间）。
-2. 规范化字段，过滤不属于目标股票类别的证券；按 ISIN + 市场/上市地点识别挂牌实例。
-3. 报价币种以 Euronext 清单为准（Oslo 有相当数量以 USD/EUR 报价的证券，不能默认 NOK），并与 Yahoo 返回的 currency 交叉校验，不一致时标记 mapping_review。
-4. 生成候选 Yahoo 代码（通常为 `<symbol>.OL`），并通过单股历史查询验证；不能仅靠拼接断言有效。
-5. 按稳定内部 ID 更新 instruments，映射记录存 symbol_aliases（同一证券同一 provider 同时只能有一条生效映射）；依据 `instrument_sync_state.consecutive_missing` 连续多期缺失时标记 inactive_candidate，人工核查后改为 inactive；不能把一次抓取失败认定为退市。
-6. 输出统计：新增、修改、缺失、无法映射、币种不一致、成功验证数量。
+### Flow A: sync_instruments（每周人工下载 + 本地导入，不是 Prefect Flow）
+**合规结论（2026-10-12）：** Euronext 使用条款禁止以 "spiders, robots, avatars, agents, tools or other devices" 自动访问，并禁止 "systematic retrieval to create collections, compilations, databases or directories"；网站内容仅限 "personal, non-commercial use"。因此清单不做自动下载：每周人工在 [Oslo 股票列表页](https://live.euronext.com/en/markets/oslo/equities/list) 点击 Download 导出 Excel，存入 `data/euronext/`（已 gitignore，不得再分发），本地运行 `scripts/import_euronext_list.py` 导入。该步骤不占用 Prefect deployment。
+1. 解析 Excel（`sources/euronext.py`）：第 1 行表头，2–4 行为元数据（标题、清单日期如 `12 Oct 2026`、免责声明），其后每行一只证券；使用 Name、ISIN、Symbol、Market、Currency 五列。市场名映射为 MIC：Oslo Børs → `XOSL`，Euronext Expand Oslo → `XOAS`，Euronext Growth Oslo → `MERK`；出现未知市场名即报错。
+2. 按 (market, exchange_symbol) upsert instruments；ISIN 仅在新值非空时覆盖，名称以 Euronext 为准。
+3. 报价币种以 Euronext 清单为准，并与 Yahoo 返回的 currency 交叉校验，不一致时标记 mapping_review 并写 `currency_mismatch` 错误。（2026-10-12 清单 294 只全部为 NOK；仍保留校验。）
+4. 对新增或映射尚未验证的证券生成候选 Yahoo 代码 `<symbol>.OL`，用 1 个月历史查询验证（有数据且币种一致才算验证通过）；已验证的不再重复请求。Yahoo 限流错误向上抛出并按退避重试，不得记为"无数据"。验证失败的证券下次同步会自动重查。
+5. 映射记录存 symbol_aliases（同一证券同一 provider 同时只能有一条生效映射）。清单中出现的证券 `consecutive_missing` 归零，`inactive_candidate` 恢复为 active；未出现的证券 `consecutive_missing + 1`，达到阈值（默认连续 2 次）标记 inactive_candidate，人工核查后改为 inactive。**只对本次文件中出现过的市场计算缺席**，防止误下载单一市场的清单把其他市场全部判为缺席。不能把一次抓取失败认定为退市。
+6. 输出统计：新增、更新、验证通过、无法映射、币种不一致、缺席、新增 inactive_candidate 数量，并写入 ingestion_runs。
 
 ### Flow B: sync_daily_prices（交易日夜间，建议 Europe/Oslo 22:00）
 1. 用 `XOSL` 交易日历判断当天是否交易日，非交易日直接退出（不消耗 Serverless 分钟数）。
@@ -232,11 +233,11 @@ CREATE TABLE ingestion_errors (
 
 **估算：** 300 只股票 × 250 交易日/年 × 10 年 ≈ 750,000 条价格记录。以 500 只计约 1,250,000 条。采用 DOUBLE PRECISION 与 SMALLINT source_id 后单行数据约 80–90 字节（含行头），加主键索引约 40 字节/行，125 万行估算约 150–200 MB。**实测（2026-10-12）：** 21 只股票 × 10 年 = 50,903 行，`daily_prices` 含索引 7 MB（约 140 字节/行），整库 15 MB；按此推算 125 万行约 170 MB，与估算一致，远低于 Neon Free 的 1 GB。
 
-**运行预算示例：** 假定价格 Flow 每天 4 分钟、每月 22 个交易日，约 88 分钟/月；清单同步 4 × 3 分钟，校验 4 × 5 分钟，预计约 120 分钟/月。首次回填、公司行为触发的全量重取和重试另计；真实执行时长需测量，500 分钟/月不是无限量。使用本地 worker 时不消耗 Serverless 分钟数。
+**运行预算示例：** 假定价格 Flow 每天 4 分钟、每月 22 个交易日，约 88 分钟/月；校验 4 × 5 分钟，预计约 110 分钟/月（清单同步在本地运行，不计入）。首次回填、公司行为触发的全量重取和重试另计；真实执行时长需测量，500 分钟/月不是无限量。使用本地 worker 时不消耗 Serverless 分钟数。
 
 | 资源 | 免费额度或约束 | 管控建议 |
 |---|---|---|
-| Prefect Hobby | 5 deployments；500 Serverless min/月；运行历史 7 天 | MVP 用 4 个 flows；对每次运行计时和月度预警 |
+| Prefect Hobby | 5 deployments；500 Serverless min/月；运行历史 7 天 | MVP 用 3 个 flows（清单同步在本地）；对每次运行计时和月度预警 |
 | Neon Free | 1 GB 存储/项目；100 CU-hours/月；5 GB 公网流量/月；空闲 5 分钟挂起 | 每周监测库大小，达到 700 MB 先讨论压缩/迁移；每日任务每次约数分钟计算（含挂起前 5 分钟空闲），远低于 100 CU-hours；本地分析大量拉取数据会消耗流量额度，需留意 |
 | yfinance | 无公开固定请求额度，可能被 429；数据中心 IP 更严 | 低并发、缓存和增量更新；必要时切换本地执行 |
 | Euronext | 官方列表提供信息，但自动下载路径、条款需验证 | 首版允许人工 CSV 输入作为回退 |
@@ -265,7 +266,7 @@ norway-stock-data/
 │   ├── pipelines/corporate_actions.py
 │   ├── quality.py
 │   └── flows.py
-├── scripts/import_euronext_csv.py
+├── scripts/import_euronext_list.py   # 人工下载的 Euronext Excel 导入（Flow A）
 └── tests/
     ├── test_mapping.py
     ├── test_quality.py
@@ -294,9 +295,9 @@ norway-stock-data/
 
 ## 13. 待确认设计决策
 
-- 是否把 equity certificates、ETF、指数纳入第一期（默认不纳入）。
+- ~~是否把 equity certificates 纳入第一期~~ → 已决定（2026-10-12）：全部纳入。ETF、指数仍不纳入（Euronext 股票清单本身也不包含）。
 - 价格复权口径：研究策略建议明确使用 `close`（仅拆股调整）或 `adj_close`（拆股 + 分红调整），不可混用。备选方案：只存 close 与 corporate_actions，按需自行计算复权价，从而不再依赖 Yahoo 的 adj_close。
-- 名单获取方式是否可以合规自动化；若不能，改为每周人工上传 CSV。
+- ~~名单获取方式是否可以合规自动化~~ → 已决定（2026-10-12）：不能，改为每周人工下载 Excel 后本地导入（见 §5 Flow A）。
 - 是否需要保存已退市证券的完整历史和历史 ticker 对照（需额外数据源，见 §2 已知局限）。
 - 执行环境：Serverless 与本地 worker 的最终选择，取决于阶段 2 实测。另一备选是 GitHub Actions cron 承担全部调度，可省去 Prefect deployment 限制，但同样是数据中心 IP，限流风险相同。
 - 若数据库实测接近 1 GB：优先瘦身字段与索引、归档旧数据，或选择付费容量。
@@ -321,3 +322,4 @@ norway-stock-data/
 | v1.1 | 2026-10-12 | 新增 corporate_actions、instrument_sync_state 表及公司行为触发的全量重取；symbol_aliases 增加生效映射唯一约束；币种取消 NOK 默认值；价格改用 DOUBLE PRECISION、source 改为 SMALLINT；明确 Yahoo Close 口径；补充数据中心 IP 风险与本地 worker 回退、Supabase pooler 连接、交易日历来源、批量分组规则、盘中数据过滤、幸存者偏差、备份方案 |
 | v1.2 | 2026-10-12 | 根据本地实测（BORR.OL）新增拆股附近跳变检测（split_anomaly）与长时间缺数据分类（suspended / 退市 / source_gap）；instruments 增加 suspended 状态；阶段 2 测试样本与验收标准相应补充 |
 | v1.3 | 2026-10-12 | 数据库由 Supabase 改为 Neon Free：更新额度、连接方式（直连 IPv4、-pooler 限制、URL 格式自动转换）、备份理由、容量实测数据与监控阈值 |
+| v1.4 | 2026-10-12 | Flow A 改为人工下载 Euronext Excel + 本地导入（条款禁止自动获取）；记录文件格式与 MIC 映射；股权证与优先股纳入范围；缺席判定仅限文件中出现的市场；更正"相当数量 USD/EUR 报价"的说法（当前清单全为 NOK）；Prefect flows 减为 3 个 |

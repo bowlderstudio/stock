@@ -44,6 +44,9 @@ class Settings(BaseSettings):
     backfill_years: int = 10
     max_flow_seconds: int = 600
 
+    # Instrument list sync (§5 Flow A)
+    missing_runs_before_inactive_candidate: int = 2
+
     # Data quality (§7)
     split_anomaly_window_days: int = 3
     split_anomaly_tolerance: float = Field(0.15, gt=0, lt=1)

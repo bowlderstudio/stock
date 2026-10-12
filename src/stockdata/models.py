@@ -29,6 +29,7 @@ class ErrorType(StrEnum):
     QUALITY_CHECK = "quality_check"
     SPLIT_ANOMALY = "split_anomaly"
     DATA_GAP = "data_gap"
+    SYNC_FAILED = "sync_failed"
 
 
 class GapKind(StrEnum):

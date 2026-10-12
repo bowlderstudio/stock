@@ -88,3 +88,43 @@ def test_to_price_rows_volume_is_python_int():
     rows = to_price_rows(42, normalize_history(RAW, last_closed=date(2026, 10, 8)))
     assert [r.volume for r in rows] == [1000, 2000]
     assert all(type(r.volume) is int for r in rows)
+
+
+# --- verify_symbol -------------------------------------------------------------
+
+
+class FakeTicker:
+    def __init__(self, history: pd.DataFrame, metadata: dict | None = None, error=None):
+        self._history, self.history_metadata, self._error = history, metadata or {}, error
+
+    def history(self, **kwargs):
+        if self._error:
+            raise self._error
+        return self._history
+
+
+def test_verify_symbol_returns_currency_from_history_metadata():
+    from stockdata.sources.yahoo import verify_symbol
+
+    fake = FakeTicker(RAW, {"currency": "NOK"})
+    assert verify_symbol("EQNR.OL", ticker_factory=lambda s: fake) == (True, "NOK")
+
+
+def test_verify_symbol_empty_history_means_no_data():
+    from stockdata.sources.yahoo import verify_symbol
+
+    fake = FakeTicker(RAW.iloc[0:0])
+    assert verify_symbol("NOPE.OL", ticker_factory=lambda s: fake) == (False, None)
+
+
+def test_verify_symbol_lets_rate_limit_errors_propagate():
+    import pytest
+
+    from stockdata.sources.yahoo import verify_symbol
+
+    class RateLimited(Exception):
+        pass
+
+    fake = FakeTicker(RAW, error=RateLimited("Too Many Requests"))
+    with pytest.raises(RateLimited):
+        verify_symbol("EQNR.OL", ticker_factory=lambda s: fake)

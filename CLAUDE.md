@@ -21,7 +21,8 @@ uv run pytest tests/test_quality.py::test_name   # 单个测试
 uv run ruff check src tests scripts && uv run ruff format src tests   # lint + 格式化
 uv run python scripts/yahoo_ip_test.py   # Yahoo 可用性测试（访问网络）
 uv run python scripts/apply_sql.py sql/001_init.sql   # 对 .env 中的数据库执行 SQL
-uv run python scripts/load_yahoo_history.py           # 临时回填脚本（Flow A/C 完成前使用）
+uv run python scripts/import_euronext_list.py [--dry-run]   # 导入 data/euronext/ 中最新的 Euronext Excel（Flow A）
+uv run python scripts/load_yahoo_history.py           # 临时回填脚本（Flow C 完成前使用）
 
 # 数据库测试（tests/test_db.py）需要本地一次性 PostgreSQL，不可用时自动 skip：
 docker run -d --name stockdata-test-pg -e POSTGRES_PASSWORD=test -e POSTGRES_DB=stockdata_test \
@@ -41,23 +42,25 @@ src/stockdata/
   trading_calendar.py        # XOSL 交易日历（不要命名为 calendar.py，会遮蔽标准库）
   sources/euronext.py        # 证券清单适配器（含手动 CSV 回退）
   sources/yahoo.py           # yfinance 封装：批量、限流、重试
-  pipelines/instruments.py   # Flow A: sync_instruments
+  pipelines/instruments.py   # Flow A: sync_instruments（本地运行，不是 Prefect flow）
   pipelines/prices.py        # Flow B/C/D: 日增量、回填、近期校验
   pipelines/corporate_actions.py  # 拆股/分红检测，触发全量重取
 .github/workflows/           # yahoo-ip-test.yml（手动）；backup.yml（计划中，每周 pg_dump）
-scripts/import_euronext_csv.py
+scripts/import_euronext_list.py
+data/euronext/               # 人工下载的 Euronext 清单（gitignored，条款禁止再分发）
 tests/
 ```
 
-四个 Prefect Flow（Hobby 上限 5 个 deployment，新增前先确认额度）：
-- `sync_instruments` 每周；`sync_daily_prices` 交易日夜间（Europe/Oslo）；`backfill_history` 手动；`reconcile_recent_prices` 每周。
+三个 Prefect Flow（Hobby 上限 5 个 deployment，新增前先确认额度）：
+- `sync_daily_prices` 交易日夜间（Europe/Oslo）；`backfill_history` 手动；`reconcile_recent_prices` 每周。
+- 清单同步（Flow A）每周在本地运行：Euronext 条款禁止自动访问和系统性抓取，**绝不要写代码自动下载 Euronext 页面或接口**，只能解析用户手动下载的文件。
 
 ## 必须遵守的约束
 
 数据正确性
 - yfinance 调用必须显式传 `auto_adjust=False`（yfinance 1.x 默认是 True），同时保存 `Close` 和 `Adj Close`，绝不混用。
 - 注意：Yahoo 的 "Close" 已做拆股调整，并非交易所原始成交价；发生拆股时整段历史都会变化，短期回看无法修正。因此拆股/分红写入 `corporate_actions`，发现新事件即设置 `instrument_sync_state.needs_full_refetch`，由 `backfill_history` 全量重取该股票。
-- 报价币种以 Euronext 清单为准，不能默认 NOK（Oslo 有 USD/EUR 报价的证券）。
+- 报价币种以 Euronext 清单为准，不能默认 NOK，并与 Yahoo 交叉校验。
 - 回填进度、最近价格日期、连续失败次数存在 `instrument_sync_state`，回填必须可断点续跑。
 - 价格表外键用内部 `instrument_id`，不要用 ticker 或 ISIN 当主键（两者都会变）。
 - 一次抓取失败或空结果不等于退市：只能标 `inactive_candidate`，由人工确认。永远不删除已入库的价格历史（退市后 Yahoo 往往不再提供数据）。

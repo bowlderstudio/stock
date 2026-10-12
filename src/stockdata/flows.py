@@ -1,18 +1,15 @@
 """Prefect flow entrypoints. Keep these thin: logic lives in stockdata.pipelines.
 
-Hobby plan allows 5 deployments; these 4 use 4 of them.
+Hobby plan allows 5 deployments; these 3 use 3 of them. sync_instruments is not a Prefect
+flow: Euronext terms require a manual download, so it runs locally
+(scripts/import_euronext_list.py).
 """
 
 from datetime import date
 
 from prefect import flow
 
-from stockdata.pipelines import instruments, prices
-
-
-@flow(name="sync_instruments")
-def sync_instruments_flow() -> dict:
-    return instruments.sync_instruments()
+from stockdata.pipelines import prices
 
 
 @flow(name="sync_daily_prices")

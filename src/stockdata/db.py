@@ -3,6 +3,7 @@
 import uuid
 from collections.abc import Iterable
 from dataclasses import astuple
+from typing import NamedTuple
 
 import psycopg
 from psycopg import sql
@@ -163,7 +164,7 @@ def update_sync_state(conn: psycopg.Connection, instrument_id: int, **fields) ->
 def start_run(conn: psycopg.Connection, run_id: uuid.UUID, flow_name: str) -> None:
     conn.execute(
         "INSERT INTO ingestion_runs (run_id, flow_name, started_at, status) "
-        "VALUES (%s, %s, now(), 'running')",
+        "VALUES (%s, %s, clock_timestamp(), 'running')",
         (run_id, flow_name),
     )
 
@@ -180,7 +181,7 @@ def finish_run(
 ) -> None:
     conn.execute(
         """
-        UPDATE ingestion_runs SET finished_at = now(), status = %s, total_symbols = %s,
+        UPDATE ingestion_runs SET finished_at = clock_timestamp(), status = %s, total_symbols = %s,
             successful_symbols = %s, rows_upserted = %s, error_count = %s
         WHERE run_id = %s
         """,
@@ -199,4 +200,33 @@ def log_error(
         "INSERT INTO ingestion_errors (run_id, instrument_id, error_type, message) "
         "VALUES (%s, %s, %s, %s)",
         (run_id, instrument_id, error_type, message),
+    )
+
+
+class InstrumentState(NamedTuple):
+    instrument_id: int
+    status: str
+    consecutive_missing: int
+    yahoo_verified: bool
+
+
+def instrument_states(conn: psycopg.Connection) -> dict[tuple[str, str], InstrumentState]:
+    """Current state of every instrument, keyed by (market, exchange_symbol)."""
+    rows = conn.execute(
+        """
+        SELECT i.market, i.exchange_symbol, i.instrument_id, i.status,
+               COALESCE(s.consecutive_missing, 0), COALESCE(a.is_verified, FALSE)
+        FROM instruments i
+        LEFT JOIN instrument_sync_state s USING (instrument_id)
+        LEFT JOIN symbol_aliases a
+               ON a.instrument_id = i.instrument_id AND a.provider = 'yahoo'
+              AND a.valid_to IS NULL
+        """
+    ).fetchall()
+    return {(m, sym): InstrumentState(*rest) for m, sym, *rest in rows}
+
+
+def set_instrument_status(conn: psycopg.Connection, instrument_id: int, status: str) -> None:
+    conn.execute(
+        "UPDATE instruments SET status = %s WHERE instrument_id = %s", (status, instrument_id)
     )

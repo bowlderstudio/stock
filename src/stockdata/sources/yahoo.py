@@ -3,6 +3,7 @@
 from datetime import date
 
 import pandas as pd
+import yfinance as yf
 
 from stockdata.models import PriceRow
 
@@ -54,6 +55,14 @@ def download_prices(
     raise NotImplementedError
 
 
-def verify_symbol(symbol: str) -> tuple[bool, str | None]:
-    """(has_data, currency) for a candidate Yahoo symbol."""
-    raise NotImplementedError
+def verify_symbol(symbol: str, ticker_factory=yf.Ticker) -> tuple[bool, str | None]:
+    """(has_data, currency) for a candidate Yahoo symbol, from one month of history.
+
+    Unknown symbols come back as empty history. Request errors (e.g. rate limiting) are
+    raised, never reported as "no data", so they cannot push a symbol into mapping_review.
+    """
+    ticker = ticker_factory(symbol)
+    history = ticker.history(period="1mo", auto_adjust=False)
+    if history.empty:
+        return False, None
+    return True, ticker.history_metadata.get("currency")
