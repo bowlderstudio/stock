@@ -5,16 +5,31 @@ Yahoo or vendor guarantees and are expected to be tuned from monitoring.
 """
 
 from functools import lru_cache
+from urllib.parse import urlsplit, urlunsplit
 
-from pydantic import Field, SecretStr
+from pydantic import AliasChoices, Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+def _to_libpq_url(url: str) -> str:
+    """Accept SQLAlchemy-style URLs (postgresql+asyncpg://...?ssl=require) for psycopg."""
+    parts = urlsplit(url)
+    scheme = parts.scheme.split("+", 1)[0]
+    query = "&".join(
+        "sslmode=" + kv.split("=", 1)[1] if kv.startswith("ssl=") else kv
+        for kv in parts.query.split("&")
+        if kv
+    )
+    return urlunsplit((scheme, parts.netloc, parts.path, query, parts.fragment))
 
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="STOCKDATA_", env_file=".env", extra="ignore")
 
-    # Supabase pooler connection string (not the IPv6-only direct host), write role only.
-    db_url: SecretStr | None = None
+    # PostgreSQL connection string, write role only. STOCKDATA_DB_URL wins over DATABASE_URL.
+    db_url: SecretStr | None = Field(
+        None, validation_alias=AliasChoices("STOCKDATA_DB_URL", "DATABASE_URL")
+    )
 
     # Yahoo request pacing (§8)
     batch_size: int = 25
@@ -36,6 +51,14 @@ class Settings(BaseSettings):
 
     exchange_calendar: str = "XOSL"
     timezone: str = "Europe/Oslo"
+
+    @field_validator("db_url", mode="before")
+    @classmethod
+    def _normalize_db_url(cls, v):
+        if v is None:
+            return v
+        raw = v.get_secret_value() if isinstance(v, SecretStr) else v
+        return _to_libpq_url(raw)
 
 
 @lru_cache

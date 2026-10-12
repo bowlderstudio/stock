@@ -9,7 +9,7 @@
 - 完整设计：`docs/norway_stock_data_system_design.md`（修改架构、表结构或 Flow 前先读它，改完同步更新文档）
 - 当前状态：`src/stockdata/` 骨架已建立。`config.py`、`trading_calendar.py`、`models.py` 已实现；其余函数签名和 docstring 已定，函数体为 `NotImplementedError`，待按 TDD 逐个实现。`yfin.py` 是早期试验脚本；`scripts/yahoo_ip_test.py` 用于检测 Yahoo 对当前网络（含云端 IP）是否可用。
 
-技术栈：Python ≥3.11、uv、yfinance、Prefect Cloud Hobby（Serverless 执行）、Supabase Free PostgreSQL。
+技术栈：Python ≥3.11、uv、yfinance、Prefect Cloud Hobby（Serverless 执行）、Neon PostgreSQL（设计文档仍写 Supabase，待更新）。连接串来自 `.env` 的 `STOCKDATA_DB_URL` 或 `DATABASE_URL`（asyncpg 写法会自动转换）。
 
 ## 常用命令
 
@@ -20,6 +20,12 @@ uv run pytest                # 运行测试
 uv run pytest tests/test_quality.py::test_name   # 单个测试
 uv run ruff check src tests scripts && uv run ruff format src tests   # lint + 格式化
 uv run python scripts/yahoo_ip_test.py   # Yahoo 可用性测试（访问网络）
+uv run python scripts/apply_sql.py sql/001_init.sql   # 对 .env 中的数据库执行 SQL
+uv run python scripts/load_yahoo_history.py           # 临时回填脚本（Flow A/C 完成前使用）
+
+# 数据库测试（tests/test_db.py）需要本地一次性 PostgreSQL，不可用时自动 skip：
+docker run -d --name stockdata-test-pg -e POSTGRES_PASSWORD=test -e POSTGRES_DB=stockdata_test \
+  -p 127.0.0.1:55432:5432 postgres:17
 ```
 
 ## 代码结构（见设计文档 §11）
@@ -77,7 +83,7 @@ tests/
 
 - `quality.py`、ticker 映射等纯逻辑必须有单元测试，不访问网络。
 - 不要在测试里调用真实 Yahoo/Euronext；用录制的样本数据或 mock。
-- upsert 测试需要真实 PostgreSQL（本地容器），不要连 Supabase 生产库。
+- upsert 测试需要真实 PostgreSQL（本地容器，见上），绝不连 Neon 生产库。
 
 ## Git
 
