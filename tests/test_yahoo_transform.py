@@ -128,3 +128,33 @@ def test_verify_symbol_lets_rate_limit_errors_propagate():
     fake = FakeTicker(RAW, error=RateLimited("Too Many Requests"))
     with pytest.raises(RateLimited):
         verify_symbol("EQNR.OL", ticker_factory=lambda s: fake)
+
+
+# --- batch download (yf.download, group_by="ticker") ----------------------------
+
+
+def batch_frame(per_symbol: dict[str, pd.DataFrame]) -> pd.DataFrame:
+    """Shape of yf.download([...], group_by='ticker', actions=True): (ticker, field)
+    columns, tz-naive date index."""
+    df = pd.concat(per_symbol, axis=1)
+    df.index = df.index.tz_localize(None)
+    return df
+
+
+def test_normalize_accepts_tz_naive_index_from_batch_download():
+    naive = RAW.copy()
+    naive.index = naive.index.tz_localize(None)
+    df = normalize_history(naive, last_closed=date(2026, 10, 8))
+    assert [ts.date() for ts in df.index] == [date(2026, 10, 7), date(2026, 10, 8)]
+
+
+def test_split_batch_returns_frame_per_symbol_and_drops_all_nan_symbols():
+    from stockdata.sources.yahoo import split_batch
+
+    nan_frame = RAW.copy()
+    nan_frame[:] = NAN
+    batch = batch_frame({"EQNR.OL": RAW, "NOPE.OL": nan_frame})
+    frames = split_batch(batch, ["EQNR.OL", "NOPE.OL", "ABSENT.OL"])
+    assert set(frames) == {"EQNR.OL"}
+    assert list(frames["EQNR.OL"].columns) == list(RAW.columns)
+    assert len(frames["EQNR.OL"]) == len(RAW)

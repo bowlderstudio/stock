@@ -3,6 +3,7 @@
 import uuid
 from collections.abc import Iterable
 from dataclasses import astuple
+from datetime import date
 from typing import NamedTuple
 
 import psycopg
@@ -203,6 +204,29 @@ def log_error(
     )
 
 
+def log_error_once(
+    conn: psycopg.Connection,
+    run_id: uuid.UUID | None,
+    instrument_id: int,
+    error_type: str,
+    message: str,
+) -> bool:
+    """log_error unless the same (instrument, type, message) is already recorded; for
+    findings that re-runs over overlapping windows would otherwise repeat. True if logged."""
+    cur = conn.execute(
+        """
+        INSERT INTO ingestion_errors (run_id, instrument_id, error_type, message)
+        SELECT %(run)s, %(iid)s, %(type)s, %(msg)s
+        WHERE NOT EXISTS (
+            SELECT 1 FROM ingestion_errors
+            WHERE instrument_id = %(iid)s AND error_type = %(type)s AND message = %(msg)s
+        )
+        """,
+        {"run": run_id, "iid": instrument_id, "type": error_type, "msg": message},
+    )
+    return cur.rowcount == 1
+
+
 class InstrumentState(NamedTuple):
     instrument_id: int
     status: str
@@ -260,3 +284,21 @@ def backfill_candidates(
         {"tickers": tickers, "refetch": refetch_pending},
     ).fetchall()
     return [(iid, sym) for iid, sym in rows]
+
+
+def daily_sync_candidates(conn: psycopg.Connection) -> list[tuple[int, str, date]]:
+    """(instrument_id, yahoo_symbol, last_price_date) for incremental sync: active,
+    verified Yahoo mapping, backfill done."""
+    return conn.execute(
+        """
+        SELECT i.instrument_id, a.provider_symbol, s.last_price_date
+        FROM instruments i
+        JOIN symbol_aliases a
+          ON a.instrument_id = i.instrument_id AND a.provider = 'yahoo'
+         AND a.valid_to IS NULL AND a.is_verified
+        JOIN instrument_sync_state s ON s.instrument_id = i.instrument_id
+        WHERE i.status = 'active' AND s.backfill_status = 'done'
+          AND s.last_price_date IS NOT NULL
+        ORDER BY i.instrument_id
+        """
+    ).fetchall()

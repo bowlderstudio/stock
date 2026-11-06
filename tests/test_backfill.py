@@ -5,17 +5,8 @@ import numpy as np
 import pandas as pd
 
 from stockdata import db
-from stockdata.models import Instrument
 from stockdata.pipelines.prices import backfill_history
-
-COLUMNS = ["Open", "High", "Low", "Close", "Adj Close", "Volume", "Dividends", "Stock Splits"]
-
-
-def history(rows: dict[str, tuple]) -> pd.DataFrame:
-    df = pd.DataFrame.from_dict(rows, orient="index", columns=COLUMNS)
-    df.index = pd.DatetimeIndex(pd.to_datetime(list(rows))).tz_localize("Europe/Oslo")
-    return df
-
+from tests.helpers import add, history
 
 GOOD = history(
     {
@@ -37,15 +28,6 @@ class FakeFetch:
         if isinstance(r, Exception):
             raise r
         return r
-
-
-def add(conn, symbol, status="active", verified=True, backfill="pending", refetch=False):
-    iid = db.upsert_instrument(conn, Instrument(None, symbol, symbol, "XOSL", "NOK"))
-    db.set_instrument_status(conn, iid, status)
-    db.set_provider_symbol(conn, iid, "yahoo", f"{symbol}.OL", verified)
-    db.update_sync_state(conn, iid, backfill_status=backfill, needs_full_refetch=refetch)
-    conn.commit()
-    return iid
 
 
 def run(conn, fetch, **kw):

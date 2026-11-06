@@ -15,13 +15,29 @@ from prefect import flow
 from stockdata import db
 from stockdata.config import get_settings
 from stockdata.pipelines import prices
-from stockdata.sources.yahoo import fetch_history
+from stockdata.sources.yahoo import download_prices, fetch_history
 from stockdata.trading_calendar import last_closed_session
 
 
 @flow(name="sync_daily_prices")
 def sync_daily_prices_flow() -> dict:
-    return prices.sync_daily_prices()
+    s = get_settings()
+    run_id = uuid.uuid4()
+    with db.connect() as conn:
+        db.start_run(conn, run_id, "sync_daily_prices")
+        conn.commit()
+        counts = prices.sync_daily_prices(
+            conn, run_id, download_prices, fetch_history,
+            today=date.today(), last_closed=last_closed_session(), settings=s,
+            pause=lambda: time.sleep(random.uniform(s.batch_delay_min_s, s.batch_delay_max_s)),
+        )  # fmt: skip
+        db.finish_run(
+            conn, run_id, "skipped" if counts["skipped"] else "completed",
+            total_symbols=counts["symbols"], successful_symbols=counts["updated"],
+            rows_upserted=counts["rows"], error_count=counts["failed"],
+        )  # fmt: skip
+        conn.commit()
+    return counts
 
 
 @flow(name="backfill_history")

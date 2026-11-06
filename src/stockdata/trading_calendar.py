@@ -37,3 +37,12 @@ def last_closed_session(now: pd.Timestamp | None = None) -> date:
     while cal.session_close(session) > now:
         session = cal.previous_session(session)
     return session.date()
+
+
+def session_n_before(day: date, n: int) -> date:
+    """The session `n` sessions before `day` (`day` itself must be a session when n == 0)."""
+    cal = _calendar()
+    session = pd.Timestamp(day)
+    for _ in range(n):
+        session = cal.previous_session(session)
+    return session.date()

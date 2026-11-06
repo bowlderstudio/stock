@@ -44,15 +44,30 @@ def to_price_rows(instrument_id: int, df: pd.DataFrame) -> list[PriceRow]:
     ]
 
 
-def download_prices(
-    symbols: list[str], start: date, end: date | None = None
-) -> dict[str, pd.DataFrame]:
-    """Daily OHLCV + Adj Close + Dividends/Stock Splits per symbol.
+def split_batch(df: pd.DataFrame, symbols: list[str]) -> dict[str, pd.DataFrame]:
+    """Per-symbol frames from a yf.download(group_by="ticker") result. Symbols Yahoo had no
+    data for come back as all-NaN columns (or are absent) and are left out."""
+    present = set(df.columns.get_level_values(0)) if df.columns.nlevels == 2 else set()
+    frames = {}
+    for symbol in symbols:
+        if symbol not in present:
+            continue
+        frame = df[symbol].dropna(how="all")
+        if not frame.empty:
+            frame.columns.name = None
+            frames[symbol] = frame
+    return frames
 
-    One yf.download call per batch (one start date per call). A failing symbol must not
-    fail the batch; 429/5xx are retried with backoff, then reported.
-    """
-    raise NotImplementedError
+
+def download_prices(symbols: list[str], start: date) -> dict[str, pd.DataFrame]:
+    """One yf.download call for symbols sharing a start date (auto_adjust=False, with
+    dividends/splits). Symbols without data are absent from the result; the caller
+    retries them one by one. Rate-limit errors propagate."""
+    df = yf.download(
+        symbols, start=start, auto_adjust=False, actions=True, group_by="ticker",
+        threads=False, progress=False,
+    )  # fmt: skip
+    return split_batch(df, symbols)
 
 
 def verify_symbol(symbol: str, ticker_factory=yf.Ticker) -> tuple[bool, str | None]:
